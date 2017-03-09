@@ -13,17 +13,28 @@ PRODUCT_VERSION(1);
 
 SYSTEM_THREAD(ENABLED);
 
+constexpr long minutesToMs(long minutes) { return minutes * 60 * 1000; }
+constexpr long weekToSeconds(long week) { return week * 7 * 24 * 60 * 60; }
 
 HT16K33 display;
-#define ROWS 16
+const int ROWS = 16;
+const int MAX_LEVEL = ROWS - 1;
+const long ELIGIBILITY_UPDATE_INTERVAL = minutesToMs(60);
+const long REDCROSS_DONATION_INTERVAL = weekToSeconds(8);
 
+int level = 0;
 
 void setup() {
   Serial.begin();
+  delay(200);
   setupStorage();
   setupRedCross();
-  display.begin();
-  display.setBrightness(9);
+  setupDisplay();
+}
+
+void loop() {
+  processRedCross();
+  processDisplay();
 }
 
 /* Persistent storage in the EEPROM */
@@ -33,7 +44,6 @@ struct Storage {
   uint16_t app;
   uint8_t username[32];
   uint8_t password[32];
-  uint8_t level;
 } storage;
 
 void setupStorage() {
@@ -44,10 +54,12 @@ void setupStorage() {
 void loadStorage() {
   EEPROM.get(0, storage);
   if (storage.app != DROP_OF_LIFE_APP) {
+    storage.app = DROP_OF_LIFE_APP;
     storage.username[0] = '\0';
     storage.password[0] = '\0';
-    storage.level = 0;
     storeStorage();
+  } else {
+    Serial.println("Loaded credentials");
   }
 }
 
@@ -56,6 +68,7 @@ void storeStorage() {
 }
 
 int setCredentials(String arg) {
+  Serial.println("Set credentials");
   int comma = arg.indexOf(",");
   if (comma < 0) {
     return -1;
@@ -64,6 +77,7 @@ int setCredentials(String arg) {
   String password = arg.substring(comma + 1);
   username.getBytes(storage.username, sizeof(storage.username));
   password.getBytes(storage.password, sizeof(storage.password));
+  storeStorage();
   return 0;
 }
 
@@ -79,40 +93,79 @@ time_t eligibility = 0;
 void setupRedCross() {
   Particle.subscribe(
     System.deviceID() + "/hook-response/" EVENT_RC_LOGIN,
-    setRedCrossToken
+    setRedCrossToken,
+    MY_DEVICES
   );
   Particle.subscribe(
     System.deviceID() + "/hook-response/" EVENT_RC_ELIGIBILITY,
-    setEligibility
+    setEligibility,
+    MY_DEVICES
   );
-  loginToRedCross();
+}
+
+void processRedCross() {
+  static bool didLogin = false;
+  static long lastUpdate = -ELIGIBILITY_UPDATE_INTERVAL;
+
+  if (!Particle.connected) {
+    return;
+  }
+
+  if (!didLogin) {
+    if (loginToRedCross()) {
+      didLogin = true;
+    }
+  }
+
+  if (didLogin && (millis() - lastUpdate > ELIGIBILITY_UPDATE_INTERVAL)) {
+    if (updateEligibility()) {
+      lastUpdate = millis();
+    }
+  }
+
+  setLevelFromEligibility();
+}
+
+void setLevelFromEligibility() {
+  long now = Time.now();
+  if (eligibility != 0 && now != 0) {
+    if (eligibility < now) {
+      level = MAX_LEVEL;
+    } else {
+      level = MAX_LEVEL - ((eligibility - now) * MAX_LEVEL / REDCROSS_DONATION_INTERVAL);
+    }
+  }
 }
 
 void setRedCrossToken(const char *event, const char *data) {
+  Serial.println("Got token");
   token = data;
 }
 
-void loginToRedCross() {
+bool loginToRedCross() {
   if (storage.username[0] == '\0' || storage.password[0] == '\0') {
-    return;
+    return false;
   }
   String data = String::format(
     "{\"username\":\"%s\",\"password\":\"%s\"}",
     storage.username,
     storage.password
   );
-  Particle.publish(EVENT_RC_LOGIN, data);
+  Particle.publish(EVENT_RC_LOGIN, data, PRIVATE);
+  return true;
 }
 
-void updateEligibility() {
+bool updateEligibility() {
   if (token.length() == 0) {
-    return;
+    return false;
   }
   String data = String::format("{\"token\":\"%s\"}", token.c_str());
-  Particle.publish(EVENT_RC_ELIGIBILITY, data);
+  Particle.publish(EVENT_RC_ELIGIBILITY, data, PRIVATE);
+  return true;
 }
 
 void setEligibility(const char *event, const char *data) {
+  Serial.println("Got eligibility date " + String(data));
   // convert string into time
   String dateStr = data;
   int dash1 = dateStr.indexOf("-");
@@ -133,17 +186,12 @@ void setEligibility(const char *event, const char *data) {
   eligibility = mktime(&date);
 }
 
-void loop() {
-  static int level = 0;
-  displayDrop(level);
-  level++;
-  delay(500);
-  if (level == ROWS) {
-    level = 0;
-    delay(5000);
-  }
-}
+/* Display */
 
+void setupDisplay() {
+  Particle.function("demo", startDemo);
+  display.begin();
+}
 
 const uint8_t DROP_FULL[ROWS] = {
   0b00010000,
@@ -202,6 +250,37 @@ const uint8_t LINE_TO_ROW[ROWS] = {
   0,
 };
 
+/* run demo once at startup */
+int demoLevel = 0;
+long demoTime = 0;
+
+int startDemo(String) {
+  demoLevel = 0;
+  demoTime = millis();
+  return 0;
+}
+
+void processDisplay() {
+  if (demoLevel >= 0) {
+    runDemo();
+  } else {
+    displayDrop(level);
+  }
+}
+
+void runDemo() {
+  static const long DEMO_DELAY = 1000;
+  displayDrop(demoLevel);
+  if (millis() - demoTime > DEMO_DELAY) {
+    demoLevel++;
+    demoTime = millis();
+  }
+
+  if (demoLevel >= MAX_LEVEL + 15) {
+    demoLevel = -1;
+  }
+}
+
 void displayDrop(uint8_t level) {
   uint8_t lines[ROWS];
   for (int i = 0; i < ROWS; i++) {
@@ -209,4 +288,30 @@ void displayDrop(uint8_t level) {
     lines[row] = (i < ROWS - level) ? DROP_EMPTY[i] : DROP_FULL[i];
   }
   display.writeDisplay(lines, 0, ROWS);
+  updateBrightness(level);
+}
+
+void updateBrightness(uint8_t level) {
+  static const int defaultBrightness = 9;
+  static int brightness = 9;
+  static const long FADE_INTERVAL = 300;
+  static int fadeDirection = 1;
+  static const int maxFadeBrightness = 14;
+  static const int minFadeBrightness = 6;
+  static long fadeTime = 0;
+
+  if (level < MAX_LEVEL) {
+    brightness = defaultBrightness;
+  } else {
+    if (millis() - fadeTime > FADE_INTERVAL) {
+      brightness += fadeDirection;
+      if (brightness >= maxFadeBrightness) {
+        fadeDirection = -1;
+      } else if (brightness <= minFadeBrightness) {
+        fadeDirection = 1;
+      }
+      fadeTime = millis();
+    }
+  }
+  display.setBrightness(brightness);
 }
