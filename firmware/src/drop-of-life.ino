@@ -26,15 +26,24 @@ int level = 0;
 
 void setup() {
   Serial.begin();
-  delay(200);
   setupStorage();
-  setupRedCross();
   setupDisplay();
 }
 
 void loop() {
+  processCloud();
   processRedCross();
   processDisplay();
+}
+
+void processCloud() {
+  static bool didConnect = false;
+  if (!didConnect && Particle.connected()) {
+    registerStorage();
+    registerRedCross();
+    registerDisplay();
+    didConnect = true;
+  }
 }
 
 /* Persistent storage in the EEPROM */
@@ -48,6 +57,9 @@ struct Storage {
 
 void setupStorage() {
   loadStorage();
+}
+
+void registerStorage() {
   Particle.function("login", setCredentials);
 }
 
@@ -58,8 +70,6 @@ void loadStorage() {
     storage.username[0] = '\0';
     storage.password[0] = '\0';
     storeStorage();
-  } else {
-    Serial.println("Loaded credentials");
   }
 }
 
@@ -90,7 +100,7 @@ String token;
 
 time_t eligibility = 0;
 
-void setupRedCross() {
+void registerRedCross() {
   Particle.subscribe(
     System.deviceID() + "/hook-response/" EVENT_RC_LOGIN,
     setRedCrossToken,
@@ -107,7 +117,7 @@ void processRedCross() {
   static bool didLogin = false;
   static long lastUpdate = -ELIGIBILITY_UPDATE_INTERVAL;
 
-  if (!Particle.connected) {
+  if (!Particle.connected()) {
     return;
   }
 
@@ -189,8 +199,11 @@ void setEligibility(const char *event, const char *data) {
 /* Display */
 
 void setupDisplay() {
-  Particle.function("demo", startDemo);
   display.begin();
+}
+
+void registerDisplay() {
+  Particle.function("demo", startDemo);
 }
 
 const uint8_t DROP_FULL[ROWS] = {
