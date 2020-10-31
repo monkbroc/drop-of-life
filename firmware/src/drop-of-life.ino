@@ -9,7 +9,7 @@
 #include <stdlib.h>
 
 PRODUCT_ID(3599);
-PRODUCT_VERSION(1);
+PRODUCT_VERSION(3);
 
 SYSTEM_THREAD(ENABLED);
 
@@ -156,6 +156,7 @@ bool loginToRedCross() {
   if (storage.username[0] == '\0' || storage.password[0] == '\0') {
     return false;
   }
+  Serial.println("Publishing RC login event");
   String data = String::format(
     "{\"username\":\"%s\",\"password\":\"%s\"}",
     storage.username,
@@ -169,6 +170,7 @@ bool updateEligibility() {
   if (token.length() == 0) {
     return false;
   }
+  Serial.println("Publishing RC get token event");
   String data = String::format("{\"token\":\"%s\"}", token.c_str());
   Particle.publish(EVENT_RC_ELIGIBILITY, data, PRIVATE);
   return true;
@@ -178,14 +180,14 @@ void setEligibility(const char *event, const char *data) {
   Serial.println("Got eligibility date " + String(data));
   // convert string into time
   String dateStr = data;
-  int dash1 = dateStr.indexOf("-");
-  int dash2 = dateStr.indexOf("-", dash1+1);
+  int dash1 = dateStr.indexOf("/");
+  int dash2 = dateStr.indexOf("/", dash1+1);
   if (dash1 < 0 || dash2 < 0) {
     return;
   }
-  int year = dateStr.substring(0, dash1).toInt();
-  int month = dateStr.substring(dash1 + 1, dash2).toInt();
-  int day = dateStr.substring(dash2 + 1).toInt();
+  int month = dateStr.substring(0, dash1).toInt();
+  int day = dateStr.substring(dash1 + 1, dash2).toInt();
+  int year = dateStr.substring(dash2 + 1).toInt();
 
   tm date;
   memset(&date, 0, sizeof(tm));
